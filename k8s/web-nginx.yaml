@@ -1,0 +1,45 @@
+# В compose nginx резолвит api-gateway через Docker DNS 127.0.0.11. В Kubernetes
+# этого адреса нет — здесь используется CoreDNS-сервис kube-dns.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: web-nginx
+data:
+  default.conf: |
+    server {
+      listen 80;
+      server_name _;
+
+      root /usr/share/nginx/html;
+      index index.html;
+
+      gzip on;
+      gzip_min_length 1024;
+      gzip_types text/css application/javascript application/json image/svg+xml;
+
+      resolver kube-dns.kube-system.svc.cluster.local valid=10s ipv6=off;
+
+      location /graphql {
+        # nginx-резолвер не применяет search domains, поэтому имя полное.
+        set $gateway http://api-gateway.dtramp.svc.cluster.local:4000;
+        proxy_pass $gateway/graphql;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header Content-Type $content_type;
+        proxy_read_timeout 30s;
+      }
+
+      location /healthz {
+        return 200 'ok';
+        add_header Content-Type text/plain;
+      }
+
+      location / {
+        try_files $uri $uri/ /index.html;
+      }
+
+      location ~* \.(js|css|png|svg|woff2?)$ {
+        expires 7d;
+        try_files $uri =404;
+      }
+    }

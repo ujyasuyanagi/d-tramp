@@ -1,0 +1,75 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api-gateway
+  template:
+    metadata:
+      labels:
+        app: api-gateway
+    spec:
+      initContainers:
+        # Шлюз стартует последним: без upstream'ов GraphQL отвечал бы ошибками.
+        - name: wait-upstreams
+          image: dtramp/backend:local
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - "until wget -qO- http://user-service:4001/health >/dev/null && wget -qO- http://trip-service:4002/health >/dev/null && wget -qO- http://map-service:4003/health >/dev/null; do sleep 2; done"
+      containers:
+        - name: api-gateway
+          image: dtramp/backend:local
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: dtramp-config
+          env:
+            - name: SERVICE_NAME
+              value: api-gateway
+            - name: PORT
+              value: '4000'
+            - name: GATEWAY_PORT
+              value: '4000'
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: dtramp-secret
+                  key: JWT_SECRET
+          ports:
+            - name: http
+              containerPort: 4000
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 96Mi
+            limits:
+              cpu: 300m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-gateway
+spec:
+  selector:
+    app: api-gateway
+  ports:
+    - port: 4000
+      targetPort: http

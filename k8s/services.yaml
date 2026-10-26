@@ -1,0 +1,217 @@
+# Все четыре node-сервиса собираются из одного Dockerfile: какой именно запускать,
+# выбирает SERVICE_NAME. В кластере достаточно одного образа dtramp/backend:local.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: user-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: user-service
+  template:
+    metadata:
+      labels:
+        app: user-service
+    spec:
+      initContainers:
+        - name: wait-mongo
+          image: mongo:7
+          command:
+            - sh
+            - -c
+            - "until mongosh --quiet --host mongo --eval \"db.adminCommand('ping')\" >/dev/null 2>&1; do sleep 2; done"
+      containers:
+        - name: user-service
+          image: dtramp/backend:local
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: dtramp-config
+          env:
+            - name: SERVICE_NAME
+              value: user-service
+            - name: PORT
+              value: '4001'
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: dtramp-secret
+                  key: JWT_SECRET
+          ports:
+            - name: http
+              containerPort: 4001
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 96Mi
+            limits:
+              cpu: 300m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: user-service
+spec:
+  selector:
+    app: user-service
+  ports:
+    - port: 4001
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: trip-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: trip-service
+  template:
+    metadata:
+      labels:
+        app: trip-service
+    spec:
+      initContainers:
+        - name: wait-mongo
+          image: mongo:7
+          command:
+            - sh
+            - -c
+            - "until mongosh --quiet --host mongo --eval \"db.adminCommand('ping')\" >/dev/null 2>&1; do sleep 2; done"
+      containers:
+        - name: trip-service
+          image: dtramp/backend:local
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: dtramp-config
+          env:
+            - name: SERVICE_NAME
+              value: trip-service
+            - name: PORT
+              value: '4002'
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: dtramp-secret
+                  key: JWT_SECRET
+          ports:
+            - name: http
+              containerPort: 4002
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 96Mi
+            limits:
+              cpu: 300m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: trip-service
+spec:
+  selector:
+    app: trip-service
+  ports:
+    - port: 4002
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: map-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: map-service
+  template:
+    metadata:
+      labels:
+        app: map-service
+    spec:
+      initContainers:
+        - name: wait-mongo
+          image: mongo:7
+          command:
+            - sh
+            - -c
+            - "until mongosh --quiet --host mongo --eval \"db.adminCommand('ping')\" >/dev/null 2>&1; do sleep 2; done"
+      containers:
+        - name: map-service
+          image: dtramp/backend:local
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: dtramp-config
+          env:
+            - name: SERVICE_NAME
+              value: map-service
+            - name: PORT
+              value: '4003'
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: dtramp-secret
+                  key: JWT_SECRET
+          ports:
+            - name: http
+              containerPort: 4003
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 384Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: map-service
+spec:
+  selector:
+    app: map-service
+  ports:
+    - port: 4003
+      targetPort: http

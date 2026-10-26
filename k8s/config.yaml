@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dtramp-config
+data:
+  MONGO_URL: mongodb://mongo:27017/dtramp
+  USER_SERVICE_URL: http://user-service:4001
+  TRIP_SERVICE_URL: http://trip-service:4002
+  MAP_SERVICE_URL: http://map-service:4003
+  MAP_DRIVER_COUNT: '90'
+  MAP_RADIUS_KM: '3'
+  MAP_MIN_NEAR: '6'
+  MAP_SEED: '42'
+  MAP_TRAFFIC: 'off'
+  SIM_TICK_MS: '500'
+  # В кластере нет OSRM: пустая строка — штатный режим движения по прямой.
+  OSRM_URL: ''
+---
+# Учебный секрет: в реальном кластере его создают через Secret/External Secrets,
+# а не хранят в git. Здесь значение нужно только для локального minikube.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dtramp-secret
+type: Opaque
+stringData:
+  JWT_SECRET: dev-secret-change-me

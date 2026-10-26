@@ -5,7 +5,8 @@
 
 Бэкенд собран как monorepo с npm workspaces: четыре самостоятельных сервиса + единый
 GraphQL-шлюз, поверх — SPA на Vue 3. Стек: Node.js 22, TypeScript, Vue 3 + Vite, Leaflet
-(тайлы Яндекс.Карт), Apollo Server 4 (GraphQL), MongoDB (mongoose), Docker Compose.
+(тайлы Яндекс.Карт), Apollo Server 4 (GraphQL), MongoDB (mongoose), Docker Compose,
+Kubernetes (minikube) и Jenkins.
 
 ## Архитектура
 
@@ -121,6 +122,43 @@ curl -s -b /tmp/j -u admin:dtramp-ci -H "Jenkins-Crumb: $crumb" \
 
 Контейнер получает `/var/run/docker.sock` и работает от root — это эквивалент root на хосте.
 Порт слушает только `127.0.0.1`; не публиковать Jenkins наружу.
+
+## Kubernetes (minikube)
+
+Манифесты лежат в `k8s/` и применяются через Kustomize. Для локального кластера:
+
+```bash
+minikube start --driver=docker --memory=3072 --cpus=2
+minikube image build -t dtramp/backend:local -f Dockerfile .
+minikube image build -t dtramp/web:local -f services/web/Dockerfile .
+kubectl apply -k k8s
+kubectl -n dtramp get pods
+minikube service web -n dtramp --url
+```
+
+Что внутри:
+
+* `dtramp/backend:local` — один образ на все четыре node-сервиса, процесс выбирает `SERVICE_NAME`;
+  web собирается отдельным Dockerfile;
+* Mongo — Deployment + PVC 1 GiB, сервисы ждут базу через initContainer;
+* `api-gateway` стартует после user/trip/map, web опубликован как NodePort 30080;
+* OSRM в кластере выключен (`OSRM_URL=''`), пробки — `MAP_TRAFFIC=off`;
+* nginx в кластере резолвит шлюз через CoreDNS (`k8s/web-nginx.yaml`), а не через Docker DNS
+  `127.0.0.11`;
+* `JWT_SECRET` в `k8s/config.yaml` — учебный; в реальном кластере Secret создаётся отдельно
+  и не хранится в git.
+
+Smoke внутри кластера (без проброса портов на хост):
+
+```bash
+kubectl -n dtramp run smoke --rm -i --restart=Never \
+  --image=dtramp/backend:local --image-pull-policy=IfNotPresent \
+  --env=GATEWAY_URL=http://api-gateway:4000/graphql \
+  --env=OSRM_PUBLIC_URL=http://127.0.0.1:1 \
+  --command -- node scripts/smoke.mjs
+```
+
+Остановить кластер — `minikube stop`, удалить — `minikube delete`.
 
 ## Интерфейс (services/web)
 
@@ -455,6 +493,7 @@ scripts/osrm-prepare.sh выгрузка дорог города через Over
 scripts/smoke.mjs       смоук-тест через GraphQL (45 проверок, без OSRM — 42)
 scripts/ui-check.mjs    прогон интерфейса в headless Chrome (19 проверок) + скриншоты в docs/screenshots
 ci/jenkins/             Dockerfile, plugins.txt, casc.yaml и compose локального Jenkins (127.0.0.1:8081)
+k8s/                    Kustomize: namespace, ConfigMap/Secret, mongo+PVC, сервисы, gateway, web
 Jenkinsfile             CI: typecheck → сборка образов → изолированный стек dtramp-ci → smoke
 docker-compose.yml      mongo + 4 сервиса + web + osrm, healthcheck и порядок старта
 Dockerfile              один образ на все node-сервисы, выбор по SERVICE_NAME
@@ -466,6 +505,7 @@ Dockerfile              один образ на все node-сервисы, в�
 api-gateway + docker-compose, map-service (водители, номера по регионам, движение и маршруты
 по реальным дорогам через self-hosted OSRM), фронт: карта на Leaflet с тайлами Яндекса,
 поиск/бронирование и вызов машины с геометрией маршрута, Jenkins pipeline в изолированном
-compose-проекте `dtramp-ci`.
+compose-проекте `dtramp-ci`, Kubernetes-манифесты и запуск стека в minikube (PVC, probes,
+NodePort, smoke внутри кластера).
 
-Дальше по плану: K8s-манифесты/minikube, буфер и итоговые скриншоты.
+Дальше по плану: буфер и итоговые скриншоты.
