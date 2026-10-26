@@ -18,10 +18,10 @@ pipeline {
     GATEWAY_HOST_PORT = '4100'
     WEB_HOST_PORT = '8180'
     OSRM_HOST_PORT = '5102'
-    // OSRM в CI не запускается: osrm-data нет в checkout. Пустая строка включает режим off.
-    OSRM_URL = ''
     JWT_SECRET = 'ci-only-secret'
     MAP_SEED = '42'
+    // CI не ходит во внешние API: уровень пробок в smoke не проверяется по существу.
+    MAP_TRAFFIC = 'off'
   }
 
   stages {
@@ -61,7 +61,9 @@ pipeline {
       steps {
         sh '''
           set -e
-          docker compose -p dtramp-ci up -d --wait --wait-timeout 180 \
+          # OSRM в CI не запускается: osrm-data нет в checkout. Пустая строка (именно
+          # присваивание в команде, а не environment) включает режим off.
+          OSRM_URL='' docker compose -p dtramp-ci up -d --wait --wait-timeout 180 \
             mongo user-service trip-service map-service api-gateway
         '''
       }

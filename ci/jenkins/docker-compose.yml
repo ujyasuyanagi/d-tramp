@@ -7,6 +7,10 @@ services:
     # root нужен для docker.sock; это эквивалент root на хосте, поэтому порт ниже
     # привязан только к loopback. Не менять на 0.0.0.0.
     user: root
+    # Fedora Enforcing не пускает контейнер к сокету с меткой container_var_run_t.
+    # docker.sock и так даёт права root на хост, так что метки здесь ничего не защищают.
+    security_opt:
+      - label=disable
     restart: unless-stopped
     ports:
       - '127.0.0.1:8081:8080'

@@ -110,6 +110,8 @@ services:
       MAP_DRIVER_COUNT: ${MAP_DRIVER_COUNT:-90}
       MAP_RADIUS_KM: ${MAP_RADIUS_KM:-3}
       MAP_MIN_NEAR: ${MAP_MIN_NEAR:-6}
+      MAP_SEED: ${MAP_SEED:-}
+      MAP_TRAFFIC: ${MAP_TRAFFIC:-on}
       SIM_TICK_MS: ${SIM_TICK_MS:-500}
       DRIVER_SOURCE: simulation
       # Без двоеточия: пустое значение — явное выключение OSRM (режим off), в том числе в CI.

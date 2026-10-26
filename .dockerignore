@@ -9,3 +9,4 @@ osrm-data
 docs
 *.docx
 *.png
+ci-artifacts
