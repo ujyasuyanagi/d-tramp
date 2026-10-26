@@ -1,0 +1,37 @@
+jenkins:
+  systemMessage: 'D-Tramp CI: изолированный стек dtramp-ci, smoke-тест внутри api-gateway'
+  numExecutors: 1
+  mode: NORMAL
+  securityRealm:
+    local:
+      allowsSignup: false
+      users:
+        - id: 'admin'
+          password: '${JENKINS_ADMIN_PASSWORD}'
+  authorizationStrategy:
+    loggedInUsersCanDoAnything:
+      allowAnonymousRead: false
+
+unclassified:
+  location:
+    url: 'http://127.0.0.1:8081/'
+
+jobs:
+  - script: |
+      pipelineJob('d-tramp-ci') {
+        description('Typecheck, сборка образов и smoke-тест в изолированном compose-проекте dtramp-ci. Рабочий стек d-tramp не затрагивается.')
+        definition {
+          cpsScm {
+            scm {
+              git {
+                remote {
+                  url('file:///workspace')
+                }
+                branch('main')
+              }
+            }
+            scriptPath('Jenkinsfile')
+            lightweight(true)
+          }
+        }
+      }

@@ -1,0 +1,35 @@
+name: dtramp-jenkins
+
+services:
+  jenkins:
+    build:
+      context: .
+    # root нужен для docker.sock; это эквивалент root на хосте, поэтому порт ниже
+    # привязан только к loopback. Не менять на 0.0.0.0.
+    user: root
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:8081:8080'
+    volumes:
+      - jenkins-home:/var/jenkins_home
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Репозиторий смонтирован только на чтение: Jenkins клонирует его через file://.
+      # :z — иначе на Fedora с SELinux Enforcing каталог выглядит пустым.
+      - ../../:/workspace:ro,z
+      - ./casc.yaml:/var/jenkins_home/casc.yaml:ro,z
+    environment:
+      CASC_JENKINS_CONFIG: /var/jenkins_home/casc.yaml
+      JENKINS_ADMIN_PASSWORD: ${JENKINS_ADMIN_PASSWORD:-dtramp-ci}
+      JAVA_OPTS: >-
+        -Djenkins.install.runSetupWizard=false
+        -Dhudson.plugins.git.GitSCM.ALLOW_LOCAL_CHECKOUT=true
+        -Duser.timezone=Europe/Moscow
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -fsS http://127.0.0.1:8080/login >/dev/null']
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+volumes:
+  jenkins-home:

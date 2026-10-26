@@ -1,0 +1,11 @@
+node_modules
+**/node_modules
+.git
+.env
+# 2.8 ГБ выгрузок и графов OSM: контейнер osrm монтирует каталог volume'ом, в контексте
+# сборки он не нужен, а попадает — и каждый билд заливает его в daemon заново
+osrm-data
+*.log
+docs
+*.docx
+*.png

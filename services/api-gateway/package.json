@@ -1,0 +1,25 @@
+{
+  "name": "@dtramp/api-gateway",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "SERVICE_NAME=api-gateway PORT=4000 tsx watch src/index.ts",
+    "start": "SERVICE_NAME=api-gateway PORT=4000 tsx src/index.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@apollo/server": "^4.13.0",
+    "@dtramp/shared": "*",
+    "cors": "^2.8.5",
+    "dataloader": "^2.2.3",
+    "express": "^4.21.2",
+    "graphql": "^16.10.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.10.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}

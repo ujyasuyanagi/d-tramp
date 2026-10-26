@@ -1,0 +1,23 @@
+{
+  "name": "d-tramp",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "services/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -n user,trip,map,gw -c cyan,green,magenta,yellow \"npm run dev -w services/user-service\" \"npm run dev -w services/trip-service\" \"npm run dev -w services/map-service\" \"npm run dev -w services/api-gateway\"",
+    "dev:web": "npm run dev -w services/web",
+    "start": "docker compose up --build",
+    "typecheck": "npm run -ws --if-present typecheck",
+    "cleanup:smoke-driver": "node scripts/cleanup-smoke-driver.mjs"
+  },
+  "dependencies": {
+    "tsx": "^4.19.2"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "typescript": "^5.7.3"
+  }
+}

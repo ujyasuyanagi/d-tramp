@@ -1,0 +1,180 @@
+name: d-tramp
+
+x-service: &service-defaults
+  restart: unless-stopped
+  environment:
+    JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+    MONGO_URL: mongodb://mongo:27017/dtramp
+  depends_on:
+    mongo:
+      condition: service_healthy
+  networks: [dtramp]
+
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    ports:
+      - '${MONGO_HOST_PORT:-27017}:27017'
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ['CMD', 'mongosh', '--quiet', '--eval', "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    networks: [dtramp]
+
+  # Реальные дороги для map-service: граф OSM строится один раз в ./osrm-data.
+  # Без него всё работает — водители едут по прямой (фолбэк в map-service/src/router.ts).
+  osrm:
+    build:
+      context: .
+      dockerfile: services/osrm/Dockerfile
+    restart: 'no'
+    environment:
+      OSRM_MAP_NAME: ${OSRM_MAP_NAME:-moscow-csfo-roads}
+      OSRM_THREADS: ${OSRM_THREADS:-4}
+    volumes:
+      # :z — без релейбла SELinux (Fedora Enforcing) контейнер видит каталог пустым
+      - ./osrm-data:/data:z
+    ports:
+      - '${OSRM_HOST_PORT:-5002}:5000'
+    healthcheck:
+      # в образе нет ни curl, ни wget — пробуем /nearest через bash /dev/tcp.
+      # /status у OSRM нет (400 «URL string malformed»), годится только реальный эндпоинт.
+      # head -c 400 обязателен: OSRM держит соединение ~5 с, а grep до EOF не успел бы в timeout
+      test: ['CMD', 'bash', '-c', 'exec 3<>/dev/tcp/127.0.0.1/5000 && printf "GET /nearest/v1/driving/37.6173,55.7558?number=1 HTTP/1.0\r\n\r\n" >&3 && head -c 400 <&3 | grep -q ''"code":"Ok"''']
+      interval: 30s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    networks: [dtramp]
+
+  user-service:
+    <<: *service-defaults
+    build:
+      context: .
+      args:
+        SERVICE_NAME: user-service
+    ports:
+      - '${USER_HOST_PORT:-4001}:4001'
+    environment:
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+      MONGO_URL: mongodb://mongo:27017/dtramp
+      PORT: '4001'
+      SERVICE_NAME: user-service
+    healthcheck:
+      test: ['CMD', 'sh', '-c', 'wget -qO- http://localhost:4001/health | grep -q user-service']
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  trip-service:
+    <<: *service-defaults
+    build:
+      context: .
+      args:
+        SERVICE_NAME: trip-service
+    ports:
+      - '${TRIP_HOST_PORT:-4002}:4002'
+    environment:
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+      MONGO_URL: mongodb://mongo:27017/dtramp
+      PORT: '4002'
+      SERVICE_NAME: trip-service
+    healthcheck:
+      test: ['CMD', 'sh', '-c', 'wget -qO- http://localhost:4002/health | grep -q trip-service']
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  map-service:
+    <<: *service-defaults
+    build:
+      context: .
+      args:
+        SERVICE_NAME: map-service
+    ports:
+      - '${MAP_HOST_PORT:-4003}:4003'
+    environment:
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+      MONGO_URL: mongodb://mongo:27017/dtramp
+      PORT: '4003'
+      SERVICE_NAME: map-service
+      # Парк распределён по городам из services/map-service/src/cities.ts. Пусто — весь
+      # список (Москва, города области, столицы ЦФО); можно сузить ключами «msk; tver»
+      # или своей точкой «54.196,37.618,71» под собственный граф OSRM.
+      MAP_CITIES: ${MAP_CITIES:-}
+      MAP_ADHOC_RADIUS_KM: ${MAP_ADHOC_RADIUS_KM:-8}
+      MAP_DRIVER_COUNT: ${MAP_DRIVER_COUNT:-90}
+      MAP_RADIUS_KM: ${MAP_RADIUS_KM:-3}
+      MAP_MIN_NEAR: ${MAP_MIN_NEAR:-6}
+      SIM_TICK_MS: ${SIM_TICK_MS:-500}
+      DRIVER_SOURCE: simulation
+      # Без двоеточия: пустое значение — явное выключение OSRM (режим off), в том числе в CI.
+      OSRM_URL: ${OSRM_URL-http://osrm:5000}
+    healthcheck:
+      test: ['CMD', 'sh', '-c', 'wget -qO- http://localhost:4003/health | grep -q map-service']
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    depends_on:
+      mongo:
+        condition: service_healthy
+
+  api-gateway:
+    build:
+      context: .
+      args:
+        SERVICE_NAME: api-gateway
+    restart: unless-stopped
+    ports:
+      - '${GATEWAY_HOST_PORT:-4000}:4000'
+    environment:
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+      PORT: '4000'
+      GATEWAY_PORT: '4000'
+      SERVICE_NAME: api-gateway
+      USER_SERVICE_URL: http://user-service:4001
+      TRIP_SERVICE_URL: http://trip-service:4002
+      MAP_SERVICE_URL: http://map-service:4003
+    depends_on:
+      user-service:
+        condition: service_healthy
+      trip-service:
+        condition: service_healthy
+      map-service:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'sh', '-c', 'wget -qO- http://localhost:4000/health | grep -q api-gateway']
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    networks: [dtramp]
+
+  web:
+    build:
+      context: .
+      dockerfile: services/web/Dockerfile
+    restart: unless-stopped
+    ports:
+      - '${WEB_HOST_PORT:-8080}:80'
+    depends_on:
+      api-gateway:
+        condition: service_healthy
+    healthcheck:
+      # 127.0.0.1, не localhost: nginx слушает только IPv4, а busybox wget в alpine
+      # на «localhost» ходит на ::1 и получает connection refused.
+      test: ['CMD', 'sh', '-c', 'wget -qO- http://127.0.0.1/ | grep -q D-Tramp']
+      interval: 10s
+      timeout: 3s
+      retries: 6
+    networks: [dtramp]
+
+volumes:
+  mongo-data:
+
+networks:
+  dtramp:
+    driver: bridge
