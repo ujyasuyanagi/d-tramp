@@ -14,6 +14,8 @@ export interface User {
   phone?: string;
   rating: number;
   tripsCount: number;
+  /** Внутренний кошелёк, ₽. */
+  balance: number;
 }
 
 export interface Trip {
@@ -70,7 +72,8 @@ export interface Ride {
   /** Полилиния маршрута по дорогам; пустая — если роутер был недоступен. */
   path: GeoPoint[];
   price: number;
-  status: 'ACCEPTED' | 'COMPLETED' | 'CANCELLED';
+  status: 'ACCEPTED' | 'DRIVER_ARRIVED' | 'BOARDED' | 'ARRIVED' | 'COMPLETED' | 'CANCELLED';
+  refundPending: boolean;
   trafficLevel: 'FREE' | 'MODERATE' | 'HEAVY' | 'UNKNOWN';
   /** На сколько минут пробки удлинили подачу. */
   pickupDelayMin: number;
@@ -86,16 +89,16 @@ export interface RoadRoute {
   path: GeoPoint[];
 }
 
-const USER_FIELDS = 'id email name role phone rating tripsCount';
+const USER_FIELDS = 'id email name role phone rating tripsCount balance';
 const POINT_FIELDS = 'name lat lon';
 const TRIP_FIELDS = `id driverId dateTime seatsTotal seatsAvailable price distanceKm status comment
   from { ${POINT_FIELDS} } to { ${POINT_FIELDS} } driver { ${USER_FIELDS} }`;
 const BOOKING_FIELDS = `id tripId userId seats priceTotal status
-  trip { id dateTime status from { name } to { name } price } passenger { ${USER_FIELDS} }`;
+  trip { id dateTime status from { ${POINT_FIELDS} } to { ${POINT_FIELDS} } price } passenger { ${USER_FIELDS} }`;
 const DRIVER_FIELDS = `id name rating lat lon status pricePerKm freeRide speedKmh distanceKm
   car { model plate regionLabel }`;
 const RIDE_FIELDS =
-  'id driverId driverName plate carModel distanceKm etaMin finishAt price status trafficLevel pickupDelayMin trafficPreferred pickup { name lat lon } dest { name lat lon } path { lat lon }';
+  'id driverId driverName plate carModel distanceKm etaMin finishAt price status refundPending trafficLevel pickupDelayMin trafficPreferred pickup { name lat lon } dest { name lat lon } path { lat lon }';
 const ROAD_FIELDS = 'byRoad distanceKm durationMin path { lat lon }';
 
 async function request<T>(query: string, variables: Record<string, unknown> = {}, token?: string): Promise<T> {
@@ -210,7 +213,7 @@ export const api = {
     ).then((data) => data.roadRoute);
   },
 
-  requestRide(input: { pickup: GeoPoint; dest: GeoPoint; radiusKm?: number }, token: string) {
+  requestRide(input: { pickup: GeoPoint; dest: GeoPoint; radiusKm?: number; driverId?: string }, token: string) {
     return request<{
       requestRide: { ride: Ride; driver: VDriver; etaMin: number; rideMinutes: number };
     }>(
@@ -230,5 +233,25 @@ export const api = {
     return request<{ cancelRide: Ride }>(`mutation ($id: ID!) { cancelRide(id: $id) { ${RIDE_FIELDS} } }`, { id }, token).then(
       (data) => data.cancelRide,
     );
+  },
+
+  boardRide(id: string, token: string) {
+    return request<{ boardRide: Ride }>(`mutation ($id: ID!) { boardRide(id: $id) { ${RIDE_FIELDS} } }`, { id }, token).then(
+      (data) => data.boardRide,
+    );
+  },
+
+  exitRide(id: string, token: string) {
+    return request<{ exitRide: Ride }>(`mutation ($id: ID!) { exitRide(id: $id) { ${RIDE_FIELDS} } }`, { id }, token).then(
+      (data) => data.exitRide,
+    );
+  },
+
+  topUpBalance(amount: number, token: string) {
+    return request<{ topUpBalance: User }>(
+      `mutation ($amount: Float!) { topUpBalance(amount: $amount) { ${USER_FIELDS} } }`,
+      { amount },
+      token,
+    ).then((data) => data.topUpBalance);
   },
 };

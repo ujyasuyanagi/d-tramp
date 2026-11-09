@@ -13,13 +13,13 @@ import vue from '@vitejs/plugin-vue';
 const cwd = resolve(new URL('..', import.meta.url).pathname);
 const temp = await mkdtemp(`${tmpdir()}/dtramp-driver-check-`);
 const entry = resolve(temp, 'entry.ts');
-await writeFile(entry, `export { default as DriverPanel } from ${JSON.stringify(resolve(cwd, 'services/web/src/components/DriverPanel.vue'))};\nexport { state } from ${JSON.stringify(resolve(cwd, 'services/web/src/store.ts'))};\nexport { ui } from ${JSON.stringify(resolve(cwd, 'services/web/src/ui.ts'))};\nexport { carPhoto } from ${JSON.stringify(resolve(cwd, 'services/web/src/carPhotos.ts'))};`);
+await writeFile(entry, `export { default as DriverPanel } from ${JSON.stringify(resolve(cwd, 'services/web/src/components/DriverPanel.vue'))};\nexport { default as MyPanel } from ${JSON.stringify(resolve(cwd, 'services/web/src/components/MyPanel.vue'))};\nexport { state } from ${JSON.stringify(resolve(cwd, 'services/web/src/store.ts'))};\nexport { ui } from ${JSON.stringify(resolve(cwd, 'services/web/src/ui.ts'))};\nexport { carPhoto } from ${JSON.stringify(resolve(cwd, 'services/web/src/carPhotos.ts'))};`);
 globalThis.localStorage = { getItem: () => null };
 try {
   const bundle = await build({ configFile: false, root: resolve(cwd, 'services/web'), plugins: [vue()], logLevel: 'error', build: { ssr: entry, write: false, rollupOptions: { output: { paths: { vue: import.meta.resolve('vue') } } } } });
   const file = resolve(temp, 'component.mjs');
   await writeFile(file, bundle.output.find(part => part.type === 'chunk' && part.isEntry).code.replace(/(["'])(vue(?:\/[^"']*)?)\1/g, (_, quote, specifier) => JSON.stringify(import.meta.resolve(specifier))));
-  const { DriverPanel, state, ui, carPhoto } = await import(pathToFileURL(file).href);
+  const { DriverPanel, MyPanel, state, ui, carPhoto } = await import(pathToFileURL(file).href);
   const render = () => renderToString(createSSRApp(DriverPanel));
   const driver = { id: 'driver-1', name: 'Алексей', car: { model: 'Toyota Camry', plate: 'А123АА777', regionLabel: 'Москва' }, rating: 4.8, lat: 55.75, lon: 37.61, status: 'FREE', pricePerKm: 25, freeRide: false, speedKmh: 40, distanceKm: 1.2 };
   assert.equal(await render(), '<!---->');
@@ -53,6 +53,18 @@ try {
   ui.selectedDriver = null;
   assert.equal(await render(), '<!---->');
   console.log('✓ Closing clears panel');
+  // A pending refund must remain actionable even behind six newer orders.
+  const ride = { id: 'pending', plate: 'А123АА777', dest: { name: 'Москва', lat: 55.75, lon: 37.61 }, price: 125, status: 'CANCELLED', refundPending: true };
+  state.rides = [...Array.from({ length: 6 }, (_, i) => ({ ...ride, id: `completed-${i}`, status: 'COMPLETED', refundPending: false })), ride];
+  html = await renderToString(createSSRApp(MyPanel));
+  assert.ok(html.includes('Повторить возврат'));
+  assert.ok(html.includes('ожидает возврата'));
+  console.log('✓ Pending refund stays visible and offers retry behind six newer orders');
+  state.rides = [{ ...ride, refundPending: false }];
+  html = await renderToString(createSSRApp(MyPanel));
+  assert.ok(!html.includes('Повторить возврат'));
+  assert.ok(!html.includes('ожидает возврата'));
+  console.log('✓ Confirmed refund hides retry and pending label');
 } finally {
   await rm(temp, { recursive: true, force: true });
   delete globalThis.localStorage;

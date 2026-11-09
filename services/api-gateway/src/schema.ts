@@ -45,16 +45,23 @@ export const typeDefs = /* GraphQL */ `
     bookTrip(tripId: ID!, seats: Int = 1): Booking!
     cancelBooking(id: ID!): Booking!
 
-    "Вызов виртуального водителя рядом."
+    "Вызов виртуального водителя рядом; цена поездки списывается с кошелька в момент вызова."
     requestRide(input: RequestRideInput!): RideResult!
+    "Отмена заказа до посадки: деньги, списанные при вызове, возвращаются на кошелёк."
     cancelRide(id: ID!): Ride!
+    "Пассажир подтвердил, что сел в машину."
+    boardRide(id: ID!): Ride!
+    "Пассажир подтвердил, что вышел по прибытии; заказ закрывается — цена списана ещё при вызове."
+    exitRide(id: ID!): Ride!
+    "Имитация пополнения кошелька."
+    topUpBalance(amount: Float!): User!
   }
 
   enum Role { DRIVER PASSENGER }
   enum TripStatus { SCHEDULED COMPLETED CANCELLED }
   enum BookingStatus { CONFIRMED CANCELLED }
   enum DriverStatus { FREE BUSY }
-  enum RideStatus { ACCEPTED COMPLETED CANCELLED }
+  enum RideStatus { ACCEPTED DRIVER_ARRIVED BOARDED ARRIVED COMPLETED CANCELLED }
   enum TrafficLevel { FREE MODERATE HEAVY UNKNOWN }
 
   type Health { ok: Boolean! service: String! }
@@ -73,6 +80,8 @@ export const typeDefs = /* GraphQL */ `
     phone: String
     rating: Float!
     tripsCount: Int!
+    "Внутренний кошелёк, ₽: цена заказа машины списывается при вызове и возвращается при отмене."
+    balance: Float!
   }
 
   type AuthPayload {
@@ -185,6 +194,8 @@ export const typeDefs = /* GraphQL */ `
     path: [GeoPoint!]!
     price: Float!
     status: RideStatus!
+    "Отмена сохранена, возврат денег ещё нужно подтвердить."
+    refundPending: Boolean!
     "Пробки на маршруте подачи в момент вызова."
     trafficLevel: TrafficLevel!
     "На сколько минут пробки удлинили подачу."
@@ -240,5 +251,7 @@ export const typeDefs = /* GraphQL */ `
     pickup: GeoPointInput!
     dest: GeoPointInput!
     radiusKm: Float
+    "Конкретная свободная машина. Без поля сервис выбирает лучшую по времени подачи."
+    driverId: ID
   }
 `;

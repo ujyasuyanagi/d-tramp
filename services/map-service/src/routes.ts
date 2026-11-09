@@ -39,13 +39,19 @@ async function rankDrivers(
   roads: RoadRouter,
   pickup: LatLng,
   radiusKm: number,
+  preferredId?: string,
 ): Promise<DriverChoice> {
   const free = (await source.listNear(pickup, radiusKm)).filter((driver) => driver.status === 'free');
   if (!free.length) return { snapshot: null, ranked: [] };
 
+  // Выбранную пассажиром машину ставим первой: в срез ближайших кандидатов она может
+  // не попасть, а заказ должен уйти именно ей.
+  const preferred = preferredId ? free.find((driver) => driver.id === preferredId) : undefined;
+  const candidates = preferred ? [preferred, ...free.filter((driver) => driver.id !== preferred.id)] : free;
+
   const snapshot = await getTrafficSnapshot(pickup, radiusKm);
   const ranked = await Promise.all(
-    free.slice(0, MAX_TRAFFIC_CANDIDATES).map(async (driver): Promise<RankedDriver> => {
+    candidates.slice(0, MAX_TRAFFIC_CANDIDATES).map(async (driver): Promise<RankedDriver> => {
       const here = { lat: driver.lat, lon: driver.lon };
       const distanceKm = driver.distanceKm ?? haversineKm(here.lat, here.lon, pickup.lat, pickup.lon);
       const route = await roads.route(here, [pickup]);
@@ -55,7 +61,7 @@ async function rankDrivers(
     }),
   );
 
-  const nearest = ranked[0];
+  const nearest = ranked.find((entry) => entry.driver.id === free[0]!.id) ?? ranked[0];
   if (!nearest) return { snapshot, ranked };
 
   const challenger = ranked
@@ -66,8 +72,9 @@ async function rankDrivers(
   const challengerClearer =
     challenger !== undefined && challenger.traffic.level !== 'unknown' && challenger.traffic.factor + 0.05 < nearest.traffic.factor;
   const gainMin = challenger ? nearest.adjustedMin - challenger.adjustedMin : 0;
-  const best =
-    challenger && challenger.traffic.level !== 'unknown' && (nearestCongested || challengerClearer) && gainMin >= MIN_TRAFFIC_ETA_GAIN
+  const best = preferred
+    ? ranked.find((entry) => entry.driver.id === preferred.id) ?? nearest
+    : challenger && challenger.traffic.level !== 'unknown' && (nearestCongested || challengerClearer) && gainMin >= MIN_TRAFFIC_ETA_GAIN
       ? challenger
       : nearest;
 
@@ -90,6 +97,8 @@ function toRide(ride: RideDoc) {
     path: ride.routePath ?? [],
     price: ride.price,
     status: ride.status,
+    refundPending: ride.refundPending ?? false,
+    paymentVersion: ride.paymentVersion,
     createdAt: ride.createdAt,
     trafficLevel: ride.trafficLevel ?? 'unknown',
     pickupDelayMin: ride.pickupDelayMin ?? 0,
@@ -100,14 +109,22 @@ function toRide(ride: RideDoc) {
 export function buildRoutes(source: DriverSource, defaults: { radiusKm: number; roads: RoadRouter }) {
   const router = Router();
 
-  /** Догоняем статус поездок, которые закончились, пока сервиса «не видели». */
+  /**
+   * Догоняем статус поездок, которые изменились, пока сервиса «не видели».
+   * Переходы привязаны только к положению машины: показ «приехали» по часам finishAt
+   * отправлял заказ дальше без подтверждений пассажира.
+   */
   async function settleRide(ride: RideDoc): Promise<RideDoc> {
-    if (ride.status === 'accepted' && new Date(ride.finishAt).getTime() <= Date.now()) {
-      ride.status = 'completed';
-      await ride.save();
-      await source.release(String(ride.driverId));
-    }
-    return ride;
+    let status: string | undefined;
+    if (ride.status === 'boarded' && await source.arrivedAtDestination(String(ride.driverId))) status = 'arrived';
+    else if (ride.status === 'accepted' && await source.arrivedAtPickup(String(ride.driverId))) status = 'driver_arrived';
+    if (!status) return ride;
+    // Опрос не должен восстанавливать заказ, отменённый параллельным запросом.
+    return (await Ride.findOneAndUpdate(
+      { _id: ride._id, status: ride.status },
+      { $set: { status } },
+      { new: true },
+    ) ?? await Ride.findById(ride._id)) as RideDoc;
   }
 
   router.get(
@@ -158,11 +175,23 @@ export function buildRoutes(source: DriverSource, defaults: { radiusKm: number; 
     requireAuth,
     asyncHandler(async (request, response) => {
       const body = request.body as Record<string, unknown>;
-      const pickup = point(body, 'pickup');
-      const dest = point(body, 'dest');
+      const picked = point(body, 'pickup');
+      const wanted = point(body, 'dest');
       const radiusKm = num(body, 'radiusKm', { min: 0.2, max: 50, optional: true }) ?? defaults.radiusKm;
+      // Явный выбор пассажира: бронируем именно эту машину, а не «лучшую по пробкам».
+      const preferredDriverId = typeof body.driverId === 'string' && body.driverId ? body.driverId : undefined;
 
-      const choice = await rankDrivers(source, defaults.roads, pickup, radiusKm);
+      // Точка во дворе или в парке — не место для машины: ставим заказ там, где пин
+      // цепляется за дорогу, иначе маршрут и водитель режут квартал напролом («последняя миля»).
+      const [snappedPickup, snappedDest] = await Promise.all([defaults.roads.snap(picked), defaults.roads.snap(wanted)]);
+      const pickup = snappedPickup ?? picked;
+      const dest = snappedDest ?? wanted;
+
+      const choice = await rankDrivers(source, defaults.roads, pickup, radiusKm, preferredDriverId);
+      if (preferredDriverId && !choice.ranked.some((entry) => entry.driver.id === preferredDriverId)) {
+        response.status(409).json({ error: 'Выбранная машина уже занята или уехала. Выберите другую.' });
+        return;
+      }
       if (!choice.best) {
         response.status(409).json({ error: `Свободных водителей в ${radiusKm} км нет. Попробуйте увеличить радиус.` });
         return;
@@ -171,12 +200,16 @@ export function buildRoutes(source: DriverSource, defaults: { radiusKm: number; 
       // id заказа известен до вставки: водитель резервируется сразу под ним,
       // ему же прокладывается маршрут подачи и поездки.
       const rideId = new mongoose.Types.ObjectId();
-      const order = [
-        choice.best,
-        ...choice.ranked
-          .filter((entry) => entry.driver.id !== choice.best!.driver.id)
-          .sort((a, b) => a.adjustedMin - b.adjustedMin || a.distanceKm - b.distanceKm),
-      ];
+      // Выбор пассажира не подменяем: если машина успела уехать, пусть он увидит
+      // отказ и выберет другую, а не получит «сюрпризом» соседнюю.
+      const order = preferredDriverId
+        ? [choice.best]
+        : [
+            choice.best,
+            ...choice.ranked
+              .filter((entry) => entry.driver.id !== choice.best!.driver.id)
+              .sort((a, b) => a.adjustedMin - b.adjustedMin || a.distanceKm - b.distanceKm),
+          ];
       let acquired: Acquisition | undefined;
       let selected: RankedDriver | undefined;
       for (const candidate of order) {
@@ -187,7 +220,13 @@ export function buildRoutes(source: DriverSource, defaults: { radiusKm: number; 
           break;
         }
       }
-      if (!acquired || !selected) throw new HttpError(409, 'Все подходящие водители только что уехали, попробуйте ещё раз');
+      if (!acquired || !selected)
+        throw new HttpError(
+          409,
+          preferredDriverId
+            ? 'Выбранная машина только что уехала — выберите другую'
+            : 'Все подходящие водители только что уехали, попробуйте ещё раз',
+        );
       const { driver, route } = acquired;
 
       // С OSRM берём реальную длину улиц и его оценку времени; без него — прямая и скорость водителя.
@@ -212,6 +251,7 @@ export function buildRoutes(source: DriverSource, defaults: { radiusKm: number; 
       const rideMinutes = Math.max(1, freeFlowRideMin + rideTraffic.delayMin);
       const finishAt = new Date(Date.now() + (etaMin + rideMinutes) * 60_000);
       const trafficPreferred =
+        !preferredDriverId &&
         choice.nearest !== undefined &&
         selected.driver.id !== choice.nearest.driver.id &&
         choice.nearest.traffic.level !== 'unknown' &&
@@ -232,6 +272,7 @@ export function buildRoutes(source: DriverSource, defaults: { radiusKm: number; 
           finishAt,
           routePath: decimate(route?.points ?? [], 150),
           price: driver.freeRide ? 0 : Math.round(driver.pricePerKm * rideLeg.distanceKm * 100) / 100,
+          paymentVersion: 1,
           trafficLevel: pickupTraffic.level,
           pickupDelayMin,
           trafficPreferred,
@@ -284,12 +325,83 @@ export function buildRoutes(source: DriverSource, defaults: { radiusKm: number; 
       const ride = await Ride.findById(request.params.id) as RideDoc | null;
       if (!ride) throw new HttpError(404, 'Заказ не найден');
       if (ride.userId !== request.auth!.id) throw new HttpError(403, 'Отменить заказ может только его владелец');
-      if (ride.status !== 'accepted') throw new HttpError(409, `Заказ уже ${ride.status}`);
+      // Повтор нужен, чтобы завершить возврат после временной ошибки user-service.
+      if (ride.status === 'cancelled') { response.json(toRide(ride)); return; }
+      const cancelled = await Ride.findOneAndUpdate(
+        { _id: ride._id, status: { $in: ['accepted', 'driver_arrived'] } },
+        { $set: { status: 'cancelled', refundPending: ride.price > 0 } },
+        { new: true },
+      ) as RideDoc | null;
+      if (!cancelled) {
+        const current = await Ride.findById(ride._id) as RideDoc;
+        if (current.status !== 'cancelled') throw new HttpError(409, `Заказ уже ${current.status}`);
+        response.json(toRide(current));
+        return;
+      }
+      await source.release(String(cancelled.driverId));
+      response.json(toRide(cancelled));
+    }),
+  );
 
-      ride.status = 'cancelled';
-      await ride.save();
+  router.post(
+    '/rides/:id/refund-complete',
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      if (!mongoose.Types.ObjectId.isValid(request.params.id!)) throw new HttpError(400, 'Некорректный id заказа');
+      const ride = await Ride.findById(request.params.id) as RideDoc | null;
+      if (!ride) throw new HttpError(404, 'Заказ не найден');
+      if (ride.userId !== request.auth!.id) throw new HttpError(403, 'Возврат доступен только владельцу заказа');
+      if (ride.status !== 'cancelled') throw new HttpError(409, 'Возврат доступен только для отменённого заказа');
+      const confirmed = await Ride.findOneAndUpdate(
+        { _id: ride._id, status: 'cancelled' },
+        { $set: { refundPending: false } },
+        { new: true },
+      ) as RideDoc;
+      response.json(toRide(confirmed));
+    }),
+  );
+
+  /** Подтверждение посадки: пассажир сел — с этого момента поездка считается начавшейся. */
+  router.post(
+    '/rides/:id/board',
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      if (!mongoose.Types.ObjectId.isValid(request.params.id!)) throw new HttpError(400, 'Некорректный id заказа');
+      const ride = await Ride.findById(request.params.id) as RideDoc | null;
+      if (!ride) throw new HttpError(404, 'Заказ не найден');
+      if (ride.userId !== request.auth!.id) throw new HttpError(403, 'Подтвердить посадку может только его владелец');
+      await settleRide(ride);
+      const boarded = await Ride.findOneAndUpdate(
+        { _id: ride._id, status: 'driver_arrived' },
+        { $set: { status: 'boarded' } },
+        { new: true },
+      ) as RideDoc | null;
+      if (!boarded) throw new HttpError(409, 'Сесть можно только после прибытия машины к точке посадки');
+      // Симуляция не знает о статусе в базе: машина стоит у точки посадки, пока её
+      // явно не отпустят, — иначе она уезжает без пассажира.
+      await source.board(String(ride.driverId));
+      response.json(toRide(boarded));
+    }),
+  );
+
+  /** Подтверждение выхода: приехали, пассажир вышел — заказ закрыт, водитель свободен. */
+  router.post(
+    '/rides/:id/exit',
+    requireAuth,
+    asyncHandler(async (request, response) => {
+      if (!mongoose.Types.ObjectId.isValid(request.params.id!)) throw new HttpError(400, 'Некорректный id заказа');
+      const ride = await Ride.findById(request.params.id) as RideDoc | null;
+      if (!ride) throw new HttpError(404, 'Заказ не найден');
+      if (ride.userId !== request.auth!.id) throw new HttpError(403, 'Подтвердить выход может только его владелец');
+      await settleRide(ride);
+      const completed = await Ride.findOneAndUpdate(
+        { _id: ride._id, status: 'arrived' },
+        { $set: { status: 'completed' } },
+        { new: true },
+      ) as RideDoc | null;
+      if (!completed) throw new HttpError(409, 'Выйти можно только после прибытия к точке назначения');
       await source.release(String(ride.driverId));
-      response.json(toRide(ride));
+      response.json(toRide(completed));
     }),
   );
 

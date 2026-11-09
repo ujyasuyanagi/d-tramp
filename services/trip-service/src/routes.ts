@@ -14,7 +14,7 @@ function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-/** Окно поиска: конкретный день либо всё从现在开始. */
+/** Окно поиска: конкретный день либо все будущие поездки. */
 function dayWindow(date?: string) {
   if (!date) return { $gte: new Date() };
   const start = new Date(`${date}T00:00:00Z`);
@@ -124,6 +124,9 @@ router.post(
     const userId = request.auth!.id;
     const seats = num(request.body as Record<string, unknown>, 'seats', { min: 1, max: 8, integer: true, optional: true }) ?? 1;
 
+    const ownTrip = await Trip.exists({ _id: tripId, driverId: userId });
+    if (ownTrip) throw new HttpError(403, 'Нельзя бронировать места в собственной поездке');
+
     if (await Booking.exists({ tripId, userId, status: 'confirmed' })) {
       throw new HttpError(409, 'Вы уже забронировали место в этой поездке');
     }
@@ -192,10 +195,15 @@ router.post(
     if (booking.userId !== request.auth!.id) throw new HttpError(403, 'Отменить бронь может только её владелец');
     if (booking.status === 'cancelled') throw new HttpError(409, 'Бронь уже отменена');
 
-    booking.status = 'cancelled';
-    await booking.save();
-    await Trip.updateOne({ _id: booking.tripId }, { $inc: { seatsAvailable: booking.seats } });
-    response.json(booking);
+    // Только один из параллельных запросов получает право вернуть места.
+    const cancelled = await Booking.findOneAndUpdate(
+      { _id: booking._id, userId: request.auth!.id, status: 'confirmed' },
+      { $set: { status: 'cancelled' } },
+      { new: true },
+    );
+    if (!cancelled) throw new HttpError(409, 'Бронь уже отменена');
+    await Trip.updateOne({ _id: cancelled.tripId }, { $inc: { seatsAvailable: cancelled.seats } });
+    response.json(cancelled);
   }),
 );
 

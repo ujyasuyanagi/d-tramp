@@ -6,12 +6,14 @@ import {
   ROLES,
   asyncHandler,
   email as emailField,
+  num,
   requireAuth,
   signToken,
   str,
   type AuthUser,
 } from '@dtramp/shared';
 import { User, toPublic, type UserAttrs } from './models';
+import { debitRide, refundRide } from './wallet';
 
 const router = Router();
 
@@ -90,6 +92,49 @@ router.patch(
     const user = await User.findByIdAndUpdate(request.auth!.id, update, { new: true });
     if (!user) throw new HttpError(404, 'Пользователь не найден');
     response.json(toPublic(user));
+  }),
+);
+
+/**
+ * Имитационное пополнение кошелька: без платёжного шлюза деньги просто
+ * «приходят» — важно, что баланс становится ресурсом поездки.
+ */
+router.post(
+  '/me/balance/topup',
+  requireAuth,
+  asyncHandler(async (request, response) => {
+    const amount = num(request.body as Record<string, unknown>, 'amount', { min: 1, max: 50_000 })!;
+    const user = await User.findByIdAndUpdate(request.auth!.id, { $inc: { balance: amount } }, { new: true });
+    if (!user) throw new HttpError(404, 'Пользователь не найден');
+    response.json(toPublic(user));
+  }),
+);
+
+/**
+ * Списание цены поездки — шлюз зовёт его в момент вызова машины, когда цена уже известна.
+ * В минус не уходим: условие $gte в атомарном апдейте закрывает и гонку «два заказа списали
+ * один баланс», и заказ дороже кошелька; неоплаченный заказ шлюз после этого отменяет.
+ */
+router.post(
+  '/me/balance/debit',
+  requireAuth,
+  asyncHandler(async (request, response) => {
+    const body = request.body as Record<string, unknown>;
+    const amount = num(body, 'amount', { min: 0, max: 100_000 })!;
+    const rideId = str(body, 'rideId', { min: 24, max: 24 })!;
+    if (!mongoose.Types.ObjectId.isValid(rideId)) throw new HttpError(400, 'Некорректный id заказа');
+    const user = await debitRide(request.auth!.id, rideId, amount);
+    response.json(toPublic(user));
+  }),
+);
+
+router.post(
+  '/me/balance/refund',
+  requireAuth,
+  asyncHandler(async (request, response) => {
+    const rideId = str(request.body as Record<string, unknown>, 'rideId', { min: 24, max: 24 })!;
+    if (!mongoose.Types.ObjectId.isValid(rideId)) throw new HttpError(400, 'Некорректный id заказа');
+    response.json(toPublic(await refundRide(request.auth!.id, rideId)));
   }),
 );
 

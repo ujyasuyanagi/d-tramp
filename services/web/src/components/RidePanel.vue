@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue';
-import { actions, driversInRadius, nearestFreeDriver, rideDistanceKm, rideEstimate, state } from '../store';
+import { computed, onBeforeUnmount, ref } from 'vue';
+import { actions, chosenDriver, driversInRadius, nearestFreeDriver, rideCancellable, rideDistanceKm, state } from '../store';
+import type { VDriver } from '../api';
 import { requestLogin } from '../ui';
 import { km, pointLabel, rub } from '../format';
 
@@ -12,14 +13,18 @@ const active = computed(() => state.activeRide);
 const minutesLeft = computed(() =>
   active.value ? Math.max(0, Math.ceil((new Date(active.value.finishAt).getTime() - now.value) / 60_000)) : 0,
 );
-const finished = computed(() => Boolean(active.value) && now.value >= new Date(active.value!.finishAt).getTime());
-
-// когда поездка дошла до конца — перегружаем статусы, водитель снова становится свободен
-watch(finished, (value) => {
-  if (value) void actions.loadMine();
-});
 
 const freeDrivers = computed(() => driversInRadius.value.filter((driver) => driver.status === 'FREE').slice(0, 5));
+const featured = computed(() => chosenDriver.value ?? nearestFreeDriver.value);
+const estimate = computed(() => {
+  const driver = featured.value;
+  if (!driver || !state.destination) return null;
+  return { price: driver.freeRide ? 0 : Math.round(driver.pricePerKm * rideDistanceKm.value) };
+});
+
+function toggleDriver(driver: VDriver) {
+  state.rideDriverId = state.rideDriverId === driver.id ? null : driver.id;
+}
 
 const trafficNote = computed(() => {
   const ride = active.value;
@@ -32,7 +37,9 @@ const trafficNote = computed(() => {
 </script>
 
 <template>
-  <div class="card">
+  <!-- Во время заказа маршрут зафиксирован: карточка поездки должна быть сверху,
+       иначе «Я сел»/«Я вышел» уезжают под нижний край панели. -->
+  <div v-if="!active" class="card">
     <h3>Куда едем</h3>
     <div class="field">
       <label>Откуда</label>
@@ -79,16 +86,21 @@ const trafficNote = computed(() => {
 
   <div v-if="active" class="card" style="border-color: var(--accent-dim)">
     <h3>Машина в пути</h3>
-    <p style="margin: 0 0 6px">
+    <div class="driver-summary">
       <span class="plate">{{ active.plate }}</span>
-      <strong style="margin-left: 8px">{{ active.driverName }}</strong>
-      <span class="meta"> · {{ active.carModel }}</span>
-    </p>
-    <p class="meta" style="margin: 0 0 8px">
+      <div class="driver-summary-text">
+        <div class="driver-summary-line">
+          <strong>{{ active.driverName }}</strong>
+        </div>
+        <p class="meta">{{ active.carModel }}</p>
+      </div>
+    </div>
+    <p class="meta" style="margin: 8px 0">
       {{ km(active.distanceKm) }} ·
-      <template v-if="active.status === 'ACCEPTED'">
-        приедет через ~{{ minutesLeft }} мин, в пути ещё ~{{ Math.max(0, minutesLeft - active.etaMin) }} мин
-      </template>
+      <template v-if="active.status === 'ACCEPTED'">приедет через ~{{ minutesLeft }} мин</template>
+      <template v-else-if="active.status === 'DRIVER_ARRIVED'">машина у точки посадки, ждёт подтверждения</template>
+      <template v-else-if="active.status === 'BOARDED'">в пути к точке назначения</template>
+      <template v-else-if="active.status === 'ARRIVED'">приехали к точке назначения</template>
       <template v-else>{{ active.status === 'COMPLETED' ? 'поездка завершена' : 'заказ отменён' }}</template>
     </p>
     <p v-if="trafficNote" class="meta" style="margin: 0 0 6px">{{ trafficNote }}</p>
@@ -97,43 +109,61 @@ const trafficNote = computed(() => {
     </p>
     <div class="row">
       <div class="shrink" style="flex: 0 0 auto">
-        <span class="meta">к оплате </span><strong>{{ rub(active.price) }}</strong>
+        <span class="meta">{{ active.price > 0 ? 'оплачено при вызове ' : 'акция: ' }}</span>
+        <strong>{{ active.price > 0 ? rub(active.price) : 'бесплатно' }}</strong>
       </div>
-      <button v-if="active.status === 'ACCEPTED'" class="danger" :disabled="state.busy" @click="actions.cancelRide(active.id)">
+      <button v-if="active.status === 'DRIVER_ARRIVED'" class="primary" :disabled="state.busy" @click="actions.boardRide(active.id)">
+        Я сел
+      </button>
+      <button v-if="active.status === 'ARRIVED'" class="primary" :disabled="state.busy" @click="actions.exitRide(active.id)">
+        Я вышел
+      </button>
+      <button v-if="rideCancellable(active)" class="danger" :disabled="state.busy" @click="actions.cancelRide(active.id)">
         Отменить заказ
       </button>
     </div>
   </div>
 
   <div v-else class="card">
-    <h3>Ближайшая свободная</h3>
-    <template v-if="nearestFreeDriver">
-      <p style="margin: 0 0 6px">
-        <span class="plate">{{ nearestFreeDriver.car.plate }}</span>
-        <strong style="margin-left: 8px">{{ nearestFreeDriver.name }}</strong>
-        <span class="meta"> · {{ nearestFreeDriver.car.model }} · {{ nearestFreeDriver.rating.toFixed(1) }}★</span>
+    <h3>{{ chosenDriver ? 'Выбранная машина' : 'Ближайшая свободная' }}</h3>
+    <template v-if="featured">
+      <div class="driver-summary">
+        <span class="plate">{{ featured.car.plate }}</span>
+        <div class="driver-summary-text">
+          <div class="driver-summary-line">
+            <strong>{{ featured.name }}</strong>
+            <span class="driver-summary-rating">{{ featured.rating.toFixed(1) }}★</span>
+          </div>
+          <p class="meta">{{ featured.car.model }}</p>
+        </div>
+      </div>
+      <p class="meta" style="margin: 8px 0 10px">
+        через {{ featured.distanceKm?.toFixed(2) }} км ·
+        {{ featured.freeRide ? 'акция: бесплатная поездка' : `${featured.pricePerKm} ₽/км` }}
       </p>
-      <p class="meta" style="margin: 0 0 10px">
-        через {{ nearestFreeDriver.distanceKm?.toFixed(2) }} км ·
-        {{ nearestFreeDriver.freeRide ? 'акция: бесплатная поездка' : `${nearestFreeDriver.pricePerKm} ₽/км` }}
-      </p>
-      <p v-if="rideEstimate" style="margin: 0 0 10px">
+      <p v-if="estimate" style="margin: 0 0 10px">
         <span class="meta">ориентировочно </span>
-        <strong style="font-size: 18px">{{ rub(rideEstimate.price) }}</strong>
+        <strong style="font-size: 18px">{{ rub(estimate.price) }}</strong>
         <span class="meta"> за {{ km(rideDistanceKm) }}</span>
       </p>
-      <button
-        class="primary"
-        style="width: 100%"
-        :disabled="!state.destination || state.busy"
-        @click="state.user ? actions.requestRide() : requestLogin()"
-      >
-        {{ state.destination ? 'Вызвать машину' : 'Сначала выбери назначение' }}
-      </button>
+      <div class="row" style="flex-wrap: wrap">
+        <button
+          class="primary"
+          style="flex: 1 1 170px"
+          :disabled="!state.destination || state.busy"
+          @click="state.user ? actions.requestRide() : requestLogin()"
+        >
+          {{ state.destination ? (chosenDriver ? 'Вызвать эту машину' : 'Вызвать машину') : 'Сначала выбери назначение' }}
+        </button>
+        <button v-if="chosenDriver" class="ghost shrink" style="flex: 0 0 auto" @click="state.rideDriverId = null">
+          Ближайшая
+        </button>
+      </div>
       <p v-if="!state.user" class="hint" style="margin: 8px 0 0">Вызов машины — после входа.</p>
-      <p v-else class="hint" style="margin: 8px 0 0">
-        При вызове учтём пробки: машина чуть дальше, но по свободной дороге, может приехать раньше.
-      </p>
+      <template v-else>
+        <p v-if="!chosenDriver" class="hint" style="margin: 8px 0 0">При вызове учтём пробки: машина чуть дальше, но по свободной дороге, может приехать раньше.</p>
+        <p class="hint" style="margin: 4px 0 0">Деньги спишутся сразу при вызове; отмена до посадки вернёт их на кошелёк.</p>
+      </template>
     </template>
     <p v-else class="empty" style="margin: 0">
       Свободных машин рядом нет. Увеличь радиус или подожди — симуляция развозит занятых.
@@ -143,13 +173,26 @@ const trafficNote = computed(() => {
   <div class="card">
     <h3>Машины рядом</h3>
     <p v-if="!freeDrivers.length" class="meta" style="margin: 0">Все в работе.</p>
-    <ul class="list" style="margin: 0; padding: 0; list-style: none">
-      <li v-for="driver in freeDrivers" :key="driver.id" class="row" style="justify-content: space-between">
-        <span class="meta"><span class="status-dot free"></span> {{ driver.car.plate }} · {{ driver.car.model }}</span>
-        <span class="meta shrink" style="flex: 0 0 auto">
-          {{ driver.freeRide ? '0 ₽' : `${driver.pricePerKm} ₽/км` }} · {{ driver.distanceKm?.toFixed(1) }} км
-        </span>
+    <ul v-else class="driver-choice-list">
+      <li v-for="driver in freeDrivers" :key="driver.id">
+        <button
+          type="button"
+          class="driver-choice"
+          :class="{ selected: chosenDriver?.id === driver.id }"
+          :aria-pressed="chosenDriver?.id === driver.id"
+          @click="toggleDriver(driver)"
+        >
+          <span class="driver-choice-main">
+            <span class="status-dot free" aria-hidden="true"></span>
+            <span class="plate">{{ driver.car.plate }}</span>
+            <span class="meta"> · {{ driver.car.model }}</span>
+          </span>
+          <span class="driver-choice-facts meta">
+            {{ driver.freeRide ? '0 ₽' : `${driver.pricePerKm} ₽/км` }} · {{ driver.distanceKm?.toFixed(1) }} км
+          </span>
+        </button>
       </li>
     </ul>
+    <p v-if="freeDrivers.length" class="hint" style="margin: 8px 0 0">Выберите машину — цена и вызов пересчитаются для неё. Без выбора сервис подберёт лучшую по подаче.</p>
   </div>
 </template>

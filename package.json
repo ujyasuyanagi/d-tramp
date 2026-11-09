@@ -11,6 +11,7 @@
     "dev:web": "npm run dev -w services/web",
     "start": "docker compose up --build",
     "typecheck": "npm run -ws --if-present typecheck",
+    "test:regression": "node --import tsx services/api-gateway/tests/regression.ts",
     "cleanup:smoke-driver": "node scripts/cleanup-smoke-driver.mjs"
   },
   "dependencies": {

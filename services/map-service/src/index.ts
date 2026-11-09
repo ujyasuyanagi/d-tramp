@@ -2,6 +2,7 @@ import express from 'express';
 import mongoose from 'mongoose';
 import { connectDb, env, envFloat, envInt, errorHandler, log, notFound, startServer } from '@dtramp/shared';
 import { selectCities } from './cities';
+import { Ride } from './models';
 import { createDriverSource } from './simulation';
 import { createRoadRouter } from './router';
 import { buildRoutes } from './routes';
@@ -43,6 +44,14 @@ app.use(errorHandler);
 
 await connectDb('map-service');
 await source.start();
+// Парк симуляции живёт в памяти: после рестарта водителей прошлого запуска нет,
+// и продолжать их заказы некому. Закрываем их, иначе они навсегда остаются активными
+// и блокируют новые вызовы. «arrived» не трогаем — там пассажир ещё может нажать «Я вышел».
+const stale = await Ride.updateMany(
+  { status: { $in: ['accepted', 'driver_arrived', 'boarded'] } },
+  [{ $set: { status: 'cancelled', refundPending: { $gt: ['$price', 0] } } }],
+);
+if (stale.modifiedCount) log.warn('Закрыты заказы прошлого запуска симуляции', { rides: stale.modifiedCount });
 process.on('SIGTERM', () => void source.stop());
 process.on('SIGINT', () => void source.stop());
 

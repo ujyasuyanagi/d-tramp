@@ -1,7 +1,7 @@
 import mongoose from 'mongoose';
 
 export const DRIVER_STATUSES = ['free', 'busy'] as const;
-export const RIDE_STATUSES = ['accepted', 'completed', 'cancelled'] as const;
+export const RIDE_STATUSES = ['accepted', 'driver_arrived', 'boarded', 'arrived', 'completed', 'cancelled'] as const;
 
 const vdriverSchema = new mongoose.Schema(
   {
@@ -40,6 +40,9 @@ const rideSchema = new mongoose.Schema(
     routePath: { type: [{ lat: Number, lon: Number }], _id: false, default: [] },
     price: { type: Number, required: true, min: 0 },
     status: { type: String, enum: RIDE_STATUSES, default: 'accepted' },
+    refundPending: { type: Boolean, default: false },
+    // Без default: старые заказы не имеют записей в журнале кошелька.
+    paymentVersion: { type: Number, enum: [1] },
     /** Обстановка на подаче в момент вызова: unknown — снимок пробок не получен. */
     trafficLevel: { type: String, enum: ['free', 'moderate', 'heavy', 'unknown'], default: 'unknown' },
     /** На сколько минут пробки удлинили подачу относительно свободного потока. */

@@ -9,6 +9,9 @@ export interface UserAttrs {
   phone?: string;
   rating: number;
   tripsCount: number;
+  /** Внутренний кошелёк: цена списывается при вызове, пополнение — имитация. */
+  balance: number;
+  ridePayments: { rideId: string; amount: number; refunded: boolean }[];
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -21,6 +24,7 @@ export interface PublicUser {
   phone?: string;
   rating: number;
   tripsCount: number;
+  balance: number;
   createdAt?: Date;
 }
 
@@ -33,6 +37,13 @@ const userSchema = new mongoose.Schema<UserAttrs>(
     phone: { type: String, trim: true },
     rating: { type: Number, default: 5, min: 0, max: 5 },
     tripsCount: { type: Number, default: 0 },
+    balance: { type: Number, default: 500 },
+    // Баланс и отметка платежа меняются одним атомарным обновлением пользователя.
+    ridePayments: {
+      type: [{ _id: false, rideId: { type: String, required: true }, amount: { type: Number, required: true }, refunded: { type: Boolean, required: true } }],
+      default: [],
+      select: false,
+    },
   },
   { timestamps: true, versionKey: false },
 );
@@ -43,7 +54,8 @@ type UserDoc = UserAttrs & { _id: mongoose.Types.ObjectId };
 
 /** Срез пользователя без хеша пароля — то, что можно отдавать наружу. */
 export function toPublic(user: mongoose.HydratedDocument<UserAttrs>): PublicUser {
-  const { _id, passwordHash, ...rest } = user.toObject() as Partial<UserDoc> & { _id: mongoose.Types.ObjectId };
+  const { _id, passwordHash, ridePayments, ...rest } = user.toObject() as Partial<UserDoc> & { _id: mongoose.Types.ObjectId };
   void passwordHash;
+  void ridePayments;
   return { ...rest, id: _id.toString() } as PublicUser;
 }

@@ -24,8 +24,10 @@ export function dateTime(iso: string) {
   return date.toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 }
 
-export function pointLabel(point: { name?: string; lat: number; lon: number }) {
-  return point.name?.trim() || `${point.lat.toFixed(4)}, ${point.lon.toFixed(4)}`;
+export function pointLabel(point: { name?: string | null; lat?: number | null; lon?: number | null }) {
+  if (point.name?.trim()) return point.name;
+  const { lat, lon } = point;
+  return typeof lat === 'number' && typeof lon === 'number' ? `${lat.toFixed(4)}, ${lon.toFixed(4)}` : 'Точка на карте';
 }
 
 /** Для input[type=datetime-local]: локальное время без сдвига часового пояса. */

@@ -25,6 +25,10 @@ const chrome = spawn(
     '--no-sandbox',
     '--disable-gpu',
     '--hide-scrollbars',
+    // Headless Chrome уважает системный прокси (GNOME), а тот пропускает только loopback:
+    // без этого флага адреса docker/minikube (172.x, 192.168.x) открываются пустой страницей.
+    '--proxy-server=direct://',
+    '--proxy-bypass-list=*',
     `--remote-debugging-port=${DEBUG_PORT}`,
     '--window-size=1440,900',
     'about:blank',

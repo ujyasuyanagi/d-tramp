@@ -17,6 +17,19 @@ function authorized(context: Context): string {
   return context.token;
 }
 
+async function cancelAndRefund(rideId: string, token: string) {
+  const ride = await map.cancelRide(rideId, token);
+  if (ride.price > 0 && ride.paymentVersion !== 1) {
+    throw new HttpError(409, 'Заказ отменён. Возврат по старому заказу требует ручной проверки баланса.');
+  }
+  try {
+    await users.refundBalance(rideId, token);
+    return await map.confirmRefund(rideId, token);
+  } catch {
+    throw new HttpError(502, 'Заказ отменён, но возврат не подтверждён. Повторите возврат во вкладке «Мои».');
+  }
+}
+
 const resolvers: Record<string, Record<string, (...args: any[]) => unknown>> = {
   Query: {
     health: () => ({ ok: true, service: 'api-gateway' }),
@@ -67,15 +80,48 @@ const resolvers: Record<string, Record<string, (...args: any[]) => unknown>> = {
 
     cancelBooking: (_parent: Json, args: { id: string }, context: Context) => trips.cancelBooking(args.id, authorized(context)).then(toBooking),
 
-    requestRide: (_parent: Json, args: { input: Json }, context: Context) =>
-      map.requestRide(args.input, authorized(context)).then((result) => ({
+    requestRide: async (_parent: Json, args: { input: Json }, context: Context) => {
+      const token = authorized(context);
+      // Деньги списываются в момент вызова, а не по выходу из машины: пустой кошелёк
+      // отсекаем до того, как под заказ зарезервируется водитель.
+      const wallet = await users.me(token);
+      if (Number(wallet.balance ?? 0) < 1) throw new HttpError(402, 'Баланс пуст — пополните кошелёк, чтобы вызвать машину');
+      const result = await map.requestRide(args.input, token);
+      // Цена известна уже здесь (pricePerKm × километры по дороге, 0 при акции freeRide),
+      // поэтому это точное списание, а не аванс: поездка оплачена с первой секунды.
+      const price = Number(result.ride?.price ?? 0);
+      if (price > 0) {
+        try {
+          await users.debitBalance(price, String(result.ride.id), token);
+        } catch (error) {
+          // Не хватило на точную цену (или два заказа делят один баланс) — заказ не оплачен,
+          // значит его не должно быть: освобождаем водителя и просим пополнить кошелёк.
+          // Даже при потерянном ответе списание могло состояться: отмена возвращает
+          // фактически списанное и блокирует запоздавшее списание этого заказа.
+          await cancelAndRefund(String(result.ride.id), token);
+          if (!(error instanceof HttpError) || error.status !== 409) throw error;
+          throw new HttpError(402, `Недостаточно средств: поездка стоит ${Math.round(price)} ₽, пополните кошелёк`);
+        }
+      }
+      return {
         ride: toRide(result.ride),
         driver: toDriver(result.driver),
         etaMin: result.etaMin,
         rideMinutes: result.rideMinutes,
-      })),
+      };
+    },
 
-    cancelRide: (_parent: Json, args: { id: string }, context: Context) => map.cancelRide(args.id, authorized(context)).then(toRide),
+    cancelRide: async (_parent: Json, args: { id: string }, context: Context) => {
+      const token = authorized(context);
+      return toRide(await cancelAndRefund(args.id, token));
+    },
+
+    boardRide: (_parent: Json, args: { id: string }, context: Context) => map.boardRide(args.id, authorized(context)).then(toRide),
+
+    /** Выход — только закрытие заказа: цена списана ещё при вызове, здесь денег не трогаем. */
+    exitRide: (_parent: Json, args: { id: string }, context: Context) => map.exitRide(args.id, authorized(context)).then(toRide),
+
+    topUpBalance: (_parent: Json, args: { amount: number }, context: Context) => users.topUpBalance(args.amount, authorized(context)).then(toUser),
   },
 
   Trip: {

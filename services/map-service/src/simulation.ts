@@ -30,6 +30,9 @@ const REBALANCE_MAX_KM = 120;
 /** Как часто свободная машина уезжает «в заказ» — вероятность в секунду на одну машину. */
 const BUSY_DRIFT_PER_SECOND = 0.001;
 
+/** «Доехал» — это когда машина стоит в самой точке, а не в пределах квартала от неё. */
+const ARRIVE_KM = 0.001;
+
 /** Закон распределения точки в круге: 'area' — равномерно по площади, 'falloff' — плотнее к центру. */
 type PointLaw = 'area' | 'falloff';
 
@@ -48,6 +51,14 @@ interface SimDriver {
   target: { lat: number; lon: number };
   /** Промежуточные вершины дороги между текущей позицией и target. */
   path: LatLng[];
+  /** Точка встречи активного заказа: у неё машина останавливается на посадку. */
+  pickup?: LatLng;
+  /** Посадка уже отработана, дальше едем к target. */
+  pickupDone: boolean;
+  /** Машина стоит у точки встречи и ждёт, пока пассажир подтвердит посадку. */
+  waitingForBoard?: boolean;
+  /** Заказная машина встала в точку назначения — по ней и закрываем прибытие. */
+  destinationReached?: boolean;
   /** «Дом»: город, вокруг которого машина ищет следующий заказ. */
   home: CitySpawn;
   busyUntil?: Date;
@@ -165,6 +176,7 @@ export class SimulationDriverSource implements DriverSource {
         heading: this.rng.range(0, 360),
         target: this.randomPoint(home, home.radiusKm, 'area'),
         path: [],
+        pickupDone: true,
       };
       if (driver.status === 'busy') driver.busyUntil = new Date(Date.now() + this.rng.range(2, 14) * 60_000);
       this.drivers.set(id, driver);
@@ -211,15 +223,36 @@ export class SimulationDriverSource implements DriverSource {
         driver.busyUntil = new Date(now + this.rng.range(3, 12) * 60_000);
       }
 
-      if (driver.path.length === 0 && haversineKm(driver.lat, driver.lon, driver.target.lat, driver.target.lon) < 0.25) {
-        // Доехала раньше, чем заказ закроется по finishAt: ждёт на месте. С новым retarget
-        // машина ушла бы по своим делам, а зелёная линия заказа тянулась бы за ней косой.
-        if (driver.rideId && driver.busyUntil && driver.busyUntil.getTime() > now) continue;
-        await this.retarget(driver);
-        continue;
-      }
+      const stepKm = driver.speedKmh * dtHours * (driver.status === 'busy' ? 1 : 0.55);
 
-      this.move(driver, driver.speedKmh * dtHours * (driver.status === 'busy' ? 1 : 0.55));
+      // Тормозим ровно в точке встречи: путь доводит машину до пина, а не до ближайшей
+      // вершины дороги. Если до неё меньше одного шага — ставим точно в точку и ждём
+      // подтверждения посадки: без «Я сел» машина не поедет дальше.
+      if (driver.pickup && !driver.pickupDone) {
+        const toPickupKm = haversineKm(driver.lat, driver.lon, driver.pickup.lat, driver.pickup.lon);
+        if (toPickupKm <= stepKm + ARRIVE_KM) {
+          driver.lat = driver.pickup.lat;
+          driver.lon = driver.pickup.lon;
+          driver.pickupDone = true;
+          driver.waitingForBoard = true;
+          continue;
+        }
+      }
+      if (driver.waitingForBoard) continue;
+
+      this.move(driver, stepKm);
+
+      // Проверяем прибытие после шага: иначе машина «приезжает», ещё не дойдя до точки,
+      // и встаёт за 20–200 м до пина.
+      if (driver.path.length === 0 && haversineKm(driver.lat, driver.lon, driver.target.lat, driver.target.lon) <= ARRIVE_KM) {
+        // Заказная машина стоит в точке назначения, пока пассажир не подтвердит выход:
+        // часы здесь поездкой не управляют, иначе машина уезжала бы сама.
+        if (driver.rideId) {
+          driver.destinationReached = true;
+          continue;
+        }
+        await this.retarget(driver);
+      }
     }
 
     if (this.ticks % 4 === 0) await this.persist();
@@ -231,21 +264,49 @@ export class SimulationDriverSource implements DriverSource {
    * улицы к ближайшему нашему городу, и машина поедет из Тамбова в Химки.
    */
   private async retarget(driver: SimDriver) {
+    driver.pickup = undefined;
+    driver.pickupDone = true;
+    driver.waitingForBoard = false;
+    driver.destinationReached = false;
     const target = this.randomPoint(driver.home, driver.home.radiusKm, 'area');
     const here = { lat: driver.lat, lon: driver.lon };
     const route = await this.roads.route(here, [target]);
     this.applyRoute(driver, route && routeEndsAt(route, [here, target]) ? route : null, target);
   }
 
-  private applyRoute(driver: SimDriver, route: RoadRoute | null, fallback: LatLng) {
+  /**
+   * arrival — точная точка, в которую машина должна встать. Геометрия OSRM заканчивается
+   * на ближайшей дороге, а пин пользователя может быть в десятках метров от неё.
+   */
+  private applyRoute(driver: SimDriver, route: RoadRoute | null, fallback: LatLng, arrival?: LatLng) {
     const finish = route ? route.points[route.points.length - 1] : undefined;
     if (!route || !finish) {
       driver.target = fallback;
       driver.path = [];
       return;
     }
-    driver.path = route.points.slice(1, -1);
-    driver.target = finish;
+    // Для заказа оставляем последнюю вершину дороги в пути и после неё идём к самому пину.
+    driver.path = arrival ? route.points.slice(1) : route.points.slice(1, -1);
+    driver.target = arrival ?? finish;
+  }
+
+  /** Вставляет точку встречи в путь сразу после ближайшей вершины дороги. */
+  private insertPickup(driver: SimDriver, route: RoadRoute | null, pickup: LatLng) {
+    if (!route) {
+      driver.path = [{ lat: pickup.lat, lon: pickup.lon }];
+      return;
+    }
+    let nearest = 0;
+    let best = Number.POSITIVE_INFINITY;
+    for (let index = 0; index < route.points.length; index += 1) {
+      const point = route.points[index]!;
+      const distance = haversineKm(point.lat, point.lon, pickup.lat, pickup.lon);
+      if (distance < best) {
+        best = distance;
+        nearest = index;
+      }
+    }
+    driver.path.splice(Math.min(nearest, driver.path.length), 0, { lat: pickup.lat, lon: pickup.lon });
   }
 
   /**
@@ -400,17 +461,32 @@ export class SimulationDriverSource implements DriverSource {
     const driver = this.drivers.get(driverId);
     if (!driver || driver.status !== 'free') return null;
 
+    const destination = stops[stops.length - 1] ?? driver;
+    const pickup = stops.length > 1 ? stops[0] : undefined;
     const route = stops.length > 1 ? await this.roads.route({ lat: driver.lat, lon: driver.lon }, stops) : null;
-    this.applyRoute(driver, route, stops[stops.length - 1] ?? driver);
+    this.applyRoute(driver, route, destination, destination);
     driver.status = 'busy';
     driver.rideId = rideId;
-    // Подстраховка: заказ доживает до release() по своему finishAt, но если заказ
-    // потеряется — водитель всё равно вернётся в пул.
+    driver.pickup = pickup;
+    driver.pickupDone = !pickup;
+    driver.waitingForBoard = false;
+    driver.destinationReached = false;
+    if (pickup) this.insertPickup(driver, route, pickup);
+    // Оценка для снапшота: занятость заказа держится по rideId, а освобождает машину
+    // только release() — подтверждение выхода пассажира.
     const minutes = route ? route.durationMin + 2 : (haversineKm(driver.lat, driver.lon, driver.target.lat, driver.target.lon) / driver.speedKmh) * 60 + 2;
     driver.busyUntil = new Date(Date.now() + minutes * 60_000);
 
     await this.persist();
     return { driver: toView(driver), route };
+  }
+
+  /** Пассажир подтвердил посадку: машина снимается с ожидания у точки встречи. */
+  async board(driverId: string): Promise<void> {
+    const driver = this.drivers.get(driverId);
+    if (!driver?.rideId || !driver.pickupDone) return;
+    driver.waitingForBoard = false;
+    await this.persist();
   }
 
   async release(driverId: string): Promise<void> {
@@ -419,7 +495,30 @@ export class SimulationDriverSource implements DriverSource {
     driver.status = 'free';
     driver.busyUntil = undefined;
     driver.rideId = undefined;
+    driver.pickup = undefined;
+    driver.pickupDone = true;
+    driver.waitingForBoard = false;
+    driver.destinationReached = false;
+    // Заказ закрыт (отмена или выход): машина не должна доезжать до чужой точки
+    // назначения — сразу выбирает новый маршрут по своим делам.
+    await this.retarget(driver);
     await this.persist();
+  }
+
+  /**
+   * Точка заказа пройдена: pickup живёт в водителе до конца заказа, а pickupDone
+   * включается ровно в момент остановки у пина — значит «доехал» можно зафиксировать
+   * и опоздавшим опросом, а только что подъехавшим — сразу.
+   */
+  async arrivedAtPickup(driverId: string): Promise<boolean> {
+    const driver = this.drivers.get(driverId);
+    return Boolean(driver?.rideId && driver.pickup && driver.pickupDone);
+  }
+
+  /** Заказная машина встала в точку назначения (флаг держится до конца заказа). */
+  async arrivedAtDestination(driverId: string): Promise<boolean> {
+    const driver = this.drivers.get(driverId);
+    return Boolean(driver?.rideId && driver.destinationReached);
   }
 
   async stats() {

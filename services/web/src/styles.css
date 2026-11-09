@@ -35,6 +35,26 @@ h2 { font-size: 22px; } h3 { font-size: 16px; }
 .field { margin-bottom: 12px; min-width: 0; }
 .row { display: flex; gap: 10px; align-items: center; }
 .row > * { flex: 1; min-width: 0; } .row > .shrink { flex: 0 0 auto; }
+/* Кошелёк: три кнопки-суммы, поле своей суммы и «Пополнить» в ширину панели не влезают —
+   ряд переносится, а поле получает осмысленную ширину вместо сжатия в 26 px. */
+.wallet-row { flex-wrap: wrap; gap: 6px; }
+.wallet-row input { flex: 1 1 120px; min-width: 108px; }
+/* Выбор машины: строка списка — кнопка, выбранная обводится акцентом. */
+.driver-choice-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+.driver-choice { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; padding: 9px 10px; background: var(--surface-2); border: 1px solid transparent; border-radius: 12px; text-align: left; }
+.driver-choice:hover:not(:disabled) { background: var(--surface-2); border-color: var(--line); }
+.driver-choice.selected { border-color: var(--accent); background: var(--accent-soft); }
+.driver-choice-main { display: inline-flex; align-items: center; gap: 7px; min-width: 0; }
+.driver-choice-facts { flex: 0 0 auto; }
+/* Шапка машины: номер отдельной колонкой, имя/рейтинг и модель — в своей строке,
+   чтобы длинные имя и модель не наезжали на номер и друг на друга. */
+.driver-summary { display: flex; align-items: flex-start; gap: 10px; }
+.driver-summary > .plate { flex: 0 0 auto; }
+.driver-summary-text { flex: 1 1 auto; min-width: 0; }
+.driver-summary-line { display: flex; align-items: baseline; justify-content: space-between; gap: 4px 8px; flex-wrap: wrap; }
+.driver-summary-line strong { min-width: 0; overflow-wrap: anywhere; }
+.driver-summary-rating { flex: 0 0 auto; margin-left: auto; color: var(--accent); font-size: 13px; font-weight: 650; white-space: nowrap; }
+.driver-summary-text p { margin: 2px 0 0; }
 .meta, .hint { color: var(--muted); font-size: 13px; }
 .shell { height: 100%; height: 100dvh; display: flex; flex-direction: column; overflow: hidden; }
 .topbar { min-height: 88px; padding: 16px 32px; display: flex; align-items: center; gap: 24px; background: var(--surface); border-bottom: 1px solid var(--line); z-index: 1100; }

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { actions, state, type Tab } from './store';
+import { actions, rideActive, state, type Tab } from './store';
 import { requestLogin, ui } from './ui';
 import DriverPanel from './components/DriverPanel.vue';
 import AuthPanel from './components/AuthPanel.vue';
@@ -27,6 +27,7 @@ function followSystem(event: MediaQueryListEvent) {
 }
 const sheet = ref(1);
 const modal = ref<HTMLDialogElement>();
+let ridePoll: ReturnType<typeof setInterval> | undefined;
 const heading = computed(() => state.tab === 'trips' ? 'Вместе по пути' : state.tab === 'ride' ? 'Куда поедем?' : 'Ваши поездки');
 const subtitle = computed(() => state.tab === 'trips' ? 'Найдите попутку. Разделите дорогу.' : state.tab === 'ride' ? 'Машина рядом, маршрут — ваш.' : 'Планы, брони и любимые маршруты.');
 let suppressSheetClick = false;
@@ -70,10 +71,19 @@ watch(() => ui.authOpen, async (isOpen) => {
 });
 onMounted(async () => {
   systemTheme.addEventListener('change', followSystem);
+  // Статусы driver_arrived/arrived рождаются в симуляции: «дзынь» и перенос точки
+  // должны случиться, даже если пользователь ушёл с вкладки «Машина».
+  ridePoll = setInterval(() => {
+    const ride = state.activeRide;
+    if (ride && rideActive(ride)) void actions.refreshActiveRide();
+  }, 1_000);
   await actions.bootstrap();
   if (state.user) await actions.loadMine();
 });
-onBeforeUnmount(() => systemTheme.removeEventListener('change', followSystem));
+onBeforeUnmount(() => {
+  systemTheme.removeEventListener('change', followSystem);
+  if (ridePoll) clearInterval(ridePoll);
+});
 </script>
 
 <template>
@@ -88,7 +98,7 @@ onBeforeUnmount(() => systemTheme.removeEventListener('change', followSystem));
       <div class="header-actions">
         <button class="theme-toggle icon-button" :aria-label="theme === 'dark' ? 'Включить светлую тему' : 'Включить тёмную тему'" @click="toggleTheme">{{ theme === 'dark' ? '☀' : '☾' }}</button>
         <template v-if="state.user">
-          <button class="account-button" @click="open('mine')"><span class="avatar">{{ state.user.name.charAt(0).toUpperCase() }}</span><span class="account-name">{{ state.user.name }}</span></button>
+          <button class="account-button" @click="open('mine')" :title="`Кошелёк: ${Math.round(state.user.balance).toLocaleString('ru-RU')} ₽`"><span class="avatar">{{ state.user.name.charAt(0).toUpperCase() }}</span><span class="account-name">{{ state.user.name }}</span><span class="meta" style="margin-left: 6px">{{ Math.round(state.user.balance).toLocaleString('ru-RU') }} ₽</span></button>
           <button class="ghost logout-button" @click="actions.logout()">Выйти</button>
         </template>
         <button v-else class="login-button" @click="requestLogin()">Войти <span aria-hidden="true">↗</span></button>

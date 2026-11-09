@@ -42,7 +42,13 @@ export interface DriverSource {
    * (обычно [посадка, назначение]); null — если водитель уже уехал.
    */
   acquire(driverId: string, rideId: string, stops: LatLng[]): Promise<Acquisition | null>;
+  /** Пассажир подтвердил посадку: машина снимается с ожидания у точки встречи. */
+  board(driverId: string): Promise<void>;
   release(driverId: string): Promise<void>;
+  /** Водитель доехал до точки посадки активного заказа (флаг держится до конца заказа). */
+  arrivedAtPickup(driverId: string): Promise<boolean>;
+  /** Заказная машина доехала до точки назначения — по этому закрываем подачу в `arrived`. */
+  arrivedAtDestination(driverId: string): Promise<boolean>;
   stats(): Promise<{
     kind: string;
     router: string;

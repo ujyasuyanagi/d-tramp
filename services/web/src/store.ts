@@ -1,6 +1,7 @@
 import { reactive, computed } from 'vue';
 import { api, type Booking, type GeoPoint, type Ride, type RoadRoute, type Role, type Trip, type User, type VDriver } from './api';
-import { haversineKm, plural } from './format';
+import { playChime } from './chime';
+import { haversineKm, plural, rub } from './format';
 
 export type Tab = 'trips' | 'ride' | 'mine';
 export type PickTarget = 'none' | 'tripFrom' | 'tripTo' | 'rideFrom' | 'rideDest';
@@ -35,6 +36,8 @@ interface State {
   myTrips: Trip[];
   rides: Ride[];
   activeRide: Ride | null;
+  /** Машина, которую пассажир выбрал сам; null — вызов с автоподбором лучшей. */
+  rideDriverId: string | null;
   /** Линия «откуда → куда» до вызова машины: по улицам, если они есть в профиле дорог. */
   preview: RoadRoute | null;
   previewKey: string;
@@ -67,6 +70,7 @@ export const state = reactive<State>({
   myTrips: [],
   rides: [],
   activeRide: null,
+  rideDriverId: null,
   preview: null,
   previewKey: '',
   tab: 'trips',
@@ -79,20 +83,13 @@ export const isAuthed = computed(() => state.user !== null);
 /** Машины внутри круга поиска: они и в списке панели, и в вызове. Остальные — просто парк на карте. */
 export const driversInRadius = computed(() => state.drivers.filter((driver) => (driver.distanceKm ?? 0) <= state.radiusKm));
 export const nearestFreeDriver = computed(() => driversInRadius.value.find((driver) => driver.status === 'FREE') ?? null);
+/** Машина, которую пассажир выбрал сам; null — сервис подберёт лучшую по подаче. */
+export const chosenDriver = computed(
+  () => driversInRadius.value.find((driver) => driver.id === state.rideDriverId && driver.status === 'FREE') ?? null,
+);
 export const rideDistanceKm = computed(() =>
   state.preview?.distanceKm ?? (state.destination ? haversineKm(state.pickup.lat, state.pickup.lon, state.destination.lat, state.destination.lon) : 0),
 );
-export const rideEstimate = computed(() => {
-  if (!nearestFreeDriver.value || !state.destination) return null;
-  const driver = nearestFreeDriver.value;
-  return {
-    plate: driver.car.plate,
-    model: driver.car.model,
-    pricePerKm: driver.pricePerKm,
-    freeRide: driver.freeRide,
-    price: driver.freeRide ? 0 : Math.round(driver.pricePerKm * rideDistanceKm.value),
-  };
-});
 
 let noticeTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -110,6 +107,15 @@ function fail(message: string) {
   errorTimer = setTimeout(() => (state.error = null), 6000);
 }
 
+/**
+ * Кошелёк меняется на вызове и на отмене заказа, а не по выходу из машины:
+ * после этих шагов перечитываем профиль, чтобы баланс в шапке и в «Моё» не отставал.
+ */
+async function syncUser() {
+  const me = await run(() => api.me(state.token!));
+  if (me) state.user = me;
+}
+
 async function run<T>(action: () => Promise<T>, successText?: string): Promise<T | undefined> {
   state.busy = true;
   state.error = null;
@@ -122,6 +128,31 @@ async function run<T>(action: () => Promise<T>, successText?: string): Promise<T
     return undefined;
   } finally {
     state.busy = false;
+  }
+}
+
+/** Заказ, в котором что-то происходит: от подачи машины до подтверждения выхода. */
+export const rideActive = (ride: Ride) => ['ACCEPTED', 'DRIVER_ARRIVED', 'BOARDED', 'ARRIVED'].includes(ride.status);
+/** Отменить заказ можно, пока пассажир не сел. */
+export const rideCancellable = (ride: Ride) => ['ACCEPTED', 'DRIVER_ARRIVED'].includes(ride.status);
+
+function applyRides(rides: Ride[]) {
+  const previous = state.activeRide;
+  state.rides = rides;
+  state.activeRide = rides.find((ride) => rideActive(ride)) ?? null;
+
+  const active = state.activeRide;
+  if (!previous || active?.id !== previous.id || active.status === previous.status) return;
+  if (active.status === 'DRIVER_ARRIVED') {
+    playChime();
+    say('Машина у точки посадки — подтвердите, что сели');
+  } else if (active.status === 'ARRIVED') {
+    // Приехали: «местоположение» пассажира переезжает на точку назначения, карта подъезжает к ней.
+    playChime();
+    state.pickup = { ...active.dest, name: active.dest.name || 'Точка назначения' };
+    state.recenterToken += 1;
+    void actions.refreshDrivers();
+    say('Приехали — подтвердите, что вышли');
   }
 }
 
@@ -159,6 +190,7 @@ export const actions = {
     state.myTrips = [];
     state.rides = [];
     state.activeRide = null;
+    state.rideDriverId = null;
     localStorage.removeItem('dtramp.token');
     say('Вы вышли');
   },
@@ -323,32 +355,83 @@ export const actions = {
       fail('Выбери точку назначения на карте');
       return false;
     }
-    const result = await run(
-      () =>
-        api.requestRide(
-          {
-            pickup: { ...state.pickup, name: state.pickup.name || 'Точка на карте' },
-            dest: destination,
-            radiusKm: state.radiusKm,
-          },
-          state.token!,
-        ),
-      'Машина вызвана',
+    const result = await run(() =>
+      api.requestRide(
+        {
+          pickup: { ...state.pickup, name: state.pickup.name || 'Точка на карте' },
+          dest: destination,
+          radiusKm: state.radiusKm,
+          driverId: chosenDriver.value?.id,
+        },
+        state.token!,
+      ),
     );
     if (!result) return false;
+    // Поездка оплачивается вызовом, а не выходом: цена честно называется в уведомлении,
+    // а кошелёк перечитываем сразу — списание видно в шапке ещё до подачи машины.
+    say(result.ride.price > 0 ? `Машина вызвана · списано ${rub(result.ride.price)}` : 'Машина вызвана · поездка бесплатная');
+    await syncUser();
+    // сервер ставит точки на ближайшую дорогу — пины переезжают туда же, чтобы
+    // пин и линия заказа не расходились «диагональю через двор»
+    if (state.activeRide?.id !== result.ride.id) {
+      state.pickup = { ...result.ride.pickup, name: state.pickup.name };
+      state.destination = { ...result.ride.dest, name: state.destination?.name };
+    }
     state.activeRide = result.ride;
     state.rides = [result.ride, ...state.rides];
+    state.rideDriverId = null;
     await actions.refreshDrivers();
     return true;
   },
 
   async cancelRide(id: string) {
-    const ride = await run(() => api.cancelRide(id, state.token!), 'Заказ отменён');
+    const ride = await run(() => api.cancelRide(id, state.token!));
     if (!ride) return false;
     if (state.activeRide?.id === id) state.activeRide = null;
     state.rides = state.rides.map((item) => (item.id === ride.id ? ride : item));
     await actions.refreshDrivers();
+    // Заказ был оплачен вызовом — отмена до посадки возвращает эти же деньги.
+    say(ride.price > 0 ? `Заказ отменён · возврат ${rub(ride.price)}` : 'Заказ отменён');
+    await syncUser();
     return true;
+  },
+
+  async boardRide(id: string) {
+    const ride = await run(() => api.boardRide(id, state.token!), 'Посадка подтверждена');
+    if (!ride) return false;
+    state.rides = state.rides.map((item) => (item.id === ride.id ? ride : item));
+    if (state.activeRide?.id === id) state.activeRide = ride;
+    return true;
+  },
+
+  async exitRide(id: string) {
+    // Денег здесь нет: заказ оплачен при вызове, выход только закрывает его.
+    const ride = await run(() => api.exitRide(id, state.token!), 'Выход подтверждён, поездка завершена');
+    if (!ride) return false;
+    state.rides = state.rides.map((item) => (item.id === ride.id ? ride : item));
+    if (state.activeRide?.id === id) state.activeRide = null;
+    await actions.refreshDrivers();
+    return true;
+  },
+
+  async topUp(amount: number) {
+    const user = await run(() => api.topUpBalance(amount, state.token!), `Кошелёк пополнен на ${Math.round(amount)} ₽`);
+    if (!user) return false;
+    state.user = user;
+    return true;
+  },
+
+  /**
+   * Короткий опрос заказов без общего loadMine: статусы driver_arrived/arrived меняются
+   * на стороне симуляции, и именно здесь звучит «дзынь» о прибытии.
+   */
+  async refreshActiveRide() {
+    if (!state.token || !state.activeRide) return;
+    try {
+      applyRides(await api.rides(state.token));
+    } catch {
+      // опрос допускает паузу: следующий тик принесёт статус
+    }
   },
 
   async loadMine() {
@@ -361,7 +444,6 @@ export const actions = {
     if (!loaded) return;
     state.bookings = loaded.bookings;
     state.myTrips = loaded.trips;
-    state.rides = loaded.rides;
-    state.activeRide = loaded.rides.find((ride) => ride.status === 'ACCEPTED') ?? null;
+    applyRides(loaded.rides);
   },
 };

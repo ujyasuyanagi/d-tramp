@@ -69,6 +69,20 @@ pipeline {
       }
     }
 
+    stage('Regression') {
+      steps {
+        sh '''
+          set +e
+          docker compose -p dtramp-ci exec -T \
+            -e MONGO_URL=mongodb://mongo:27017 \
+            api-gateway node --import tsx services/api-gateway/tests/regression.ts > ci-artifacts/regression.log 2>&1
+          status=$?
+          cat ci-artifacts/regression.log
+          exit $status
+        '''
+      }
+    }
+
     stage('Smoke') {
       steps {
         sh '''
@@ -97,7 +111,7 @@ pipeline {
       archiveArtifacts artifacts: 'ci-artifacts/**', allowEmptyArchive: true
     }
     failure {
-      echo 'CI failed: смотри ci-artifacts/typecheck.log, smoke.log и compose.log'
+      echo 'CI failed: смотри ci-artifacts/typecheck.log, regression.log, smoke.log и compose.log'
     }
   }
 }

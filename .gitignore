@@ -5,3 +5,11 @@ dist/
 .DS_Store
 osrm-data/
 ci-artifacts/
+output/
+.agents/
+.takiza/
+.playwright-mcp/
+skills-lock.json
+*.docx
+
+

@@ -56,7 +56,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onEscape));
           <p v-if="!liveDriver" class="driver-panel-note">Машина больше не видна в текущей области карты. Показаны последние полученные данные.</p>
           <p v-else-if="outsideRadius" class="driver-panel-note">Машина за пределами радиуса поиска. Увеличьте радиус во вкладке «Машина», чтобы увидеть её в списке рядом.</p>
           <p v-else-if="driver.status === 'BUSY'" class="driver-panel-note">Водитель выполняет другую поездку.</p>
-          <p v-else class="driver-panel-note">Вызвать машину можно во вкладке «Машина». Для заказа сервис подберёт ближайшего свободного водителя.</p>
+          <p v-else class="driver-panel-note">Вызвать машину можно во вкладке «Машина»: выберите её в списке «Машины рядом» или оставьте автоподбор по времени подачи.</p>
         </div>
       </div>
     </aside>

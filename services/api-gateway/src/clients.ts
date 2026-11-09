@@ -21,6 +21,7 @@ export const toRide = (raw: Json) => ({
   id: id(raw),
   driverId: String(raw.driverId),
   status: up(raw.status),
+  refundPending: Boolean(raw.refundPending),
   trafficLevel: up(raw.trafficLevel ?? 'unknown'),
   pickupDelayMin: Number(raw.pickupDelayMin ?? 0),
   trafficPreferred: Boolean(raw.trafficPreferred),
@@ -43,6 +44,12 @@ export const users = {
   me: (token: string) => callService<Json>(USER_URL, '/me', { token }),
   updateMe: (input: Json, token: string) =>
     callService<Json>(USER_URL, '/me', { method: 'PATCH', body: { ...input, role: down(input.role) }, token }),
+  topUpBalance: (amount: number, token: string) =>
+    callService<Json>(USER_URL, '/me/balance/topup', { method: 'POST', body: { amount }, token }),
+  debitBalance: (amount: number, rideId: string, token: string) =>
+    callService<Json>(USER_URL, '/me/balance/debit', { method: 'POST', body: { amount, rideId }, token }),
+  refundBalance: (rideId: string, token: string) =>
+    callService<Json>(USER_URL, '/me/balance/refund', { method: 'POST', body: { rideId }, token }),
   byId: (userId: string, token?: string) => callService<Json>(USER_URL, `/users/${userId}`, { token }),
   batch: (userIds: readonly string[], token?: string) =>
     callService<Json[]>(USER_URL, '/users/batch', { method: 'POST', body: { ids: [...userIds] }, token }),
@@ -90,6 +97,9 @@ export const map = {
   rides: (token: string) => callService<Json[]>(MAP_URL, '/rides', { token }),
   ride: (rideId: string, token: string) => callService<Json>(MAP_URL, `/rides/${rideId}`, { token }),
   cancelRide: (rideId: string, token: string) => callService<Json>(MAP_URL, `/rides/${rideId}/cancel`, { method: 'POST', token }),
+  confirmRefund: (rideId: string, token: string) => callService<Json>(MAP_URL, `/rides/${rideId}/refund-complete`, { method: 'POST', token }),
+  boardRide: (rideId: string, token: string) => callService<Json>(MAP_URL, `/rides/${rideId}/board`, { method: 'POST', token }),
+  exitRide: (rideId: string, token: string) => callService<Json>(MAP_URL, `/rides/${rideId}/exit`, { method: 'POST', token }),
 };
 
 export interface Loaders {
